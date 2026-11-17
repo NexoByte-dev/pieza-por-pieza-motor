@@ -1,0 +1,8 @@
+node_modules/
+salida/
+kit.json
+.DS_Store
+# audio de terceros / voces: no se suben (repo público)
+videos/*/audio_externo.*
+videos/*/audio.flac
+videos/*/voz/
