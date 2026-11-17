@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<title>Pieza por Pieza · Estudio</title>
+<style>
+  @font-face { font-family: 'SG'; font-weight: 700; src: url('/node_modules/@fontsource/space-grotesk/files/space-grotesk-latin-700-normal.woff2') format('woff2'); }
+  html, body { margin: 0; height: 100%; background: #0b0c14; color: #e8e8f0; font: 15px/1.4 system-ui, sans-serif; }
+  /* escenario original del motor: se usa para medir textos, no se ve */
+  #stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; overflow: hidden; visibility: hidden; pointer-events: none; }
+  #stage canvas { position: absolute; inset: 0; width: 1080px; height: 1920px; }
+  #cap { position: absolute; left: 60px; right: 60px; top: 300px; text-align: center; font: 700 82px/1.12 'SG', sans-serif; letter-spacing: -1px; }
+  .w { display: inline-block; transform-origin: 50% 80%; }
+  #nota { position: absolute; left: 90px; right: 90px; top: 540px; text-align: center; font: 700 40px/1.2 'SG', sans-serif; }
+  #brand { position: absolute; left: 0; right: 0; bottom: 330px; text-align: center; font-family: 'SG', sans-serif; }
+  #brand .bt { display: inline-block; font-weight: 700; font-size: 104px; letter-spacing: -2px; padding: 10px 38px 16px; border: 6px solid #14151f; }
+  #brand .bs { margin-top: 34px; font-weight: 700; font-size: 46px; }
+  /* interfaz */
+  main { position: relative; z-index: 2; display: flex; gap: 28px; height: 100%; box-sizing: border-box; padding: 22px; }
+  #vista { height: 100%; aspect-ratio: 9 / 16; background: #000; border-radius: 14px; box-shadow: 0 10px 40px #0008; }
+  aside { flex: 1; max-width: 440px; display: flex; flex-direction: column; gap: 14px; }
+  h1 { margin: 0; font: 700 26px 'SG', sans-serif; color: #cdf23a; }
+  select, button { font: 600 16px system-ui; padding: 10px 14px; border-radius: 10px; border: 2px solid #2e3150; background: #15172a; color: #fff; }
+  button.main { background: #cdf23a; color: #0e0f1a; border-color: #14151f; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  input[type=range] { width: 100%; }
+  #barra { height: 12px; background: #1d2036; border-radius: 6px; overflow: hidden; }
+  #barra div { height: 100%; width: 0; background: #cdf23a; }
+  #estado { min-height: 3em; color: #b8bad0; white-space: pre-line; }
+  .peq { font-size: 13px; color: #8a8ca2; }
+</style>
+<script type="importmap">{ "imports": { "three": "/node_modules/three/build/three.module.js", "three/addons/": "/node_modules/three/examples/jsm/" } }</script>
+</head><body>
+<div id="stage"><canvas id="c"></canvas><div id="cap"></div><div id="nota"></div><div id="brand"></div></div>
+<main>
+  <canvas id="vista" width="1080" height="1920"></canvas>
+  <aside>
+    <h1>PIEZA POR PIEZA · estudio</h1>
+    <label>Video <select id="proy"></select></label>
+    <input id="seek" type="range" min="0" step="0.01" value="0"><span id="tm" class="peq">0.0 s</span>
+    <button id="render" class="main">Renderizar MP4</button>
+    <div id="barra"><div></div></div>
+    <div id="estado">Cargando…</div>
+    <p class="peq">Renderiza dentro de este navegador con tu GPU y descarga el MP4 final (animación, tarjetas, subtítulos en pantalla y audio). Funciona mejor en Google Chrome.</p>
+  </aside>
+</main>
+<script type="module">
+import { Stage } from '/engine.js';
+import { Muxer, ArrayBufferTarget } from '/vendor/mp4-muxer.mjs';
+
+const $ = id => document.getElementById(id);
+const AUTO = new URLSearchParams(location.search).has('auto');   // modo terminal: renderiza solo y envía el MP4 al servidor local
+const avisa = (m) => { if (AUTO) fetch('/aviso?m=' + encodeURIComponent(m)).catch(() => {}); };
+const estado = t => { $('estado').textContent = t; };
+const W = 1080, H = 1920, FPS = 30;
+const PROYECTOS = await (await fetch('/api/videos')).json();   // cada carpeta de videos/ con su video.json
+for (const p of PROYECTOS) $('proy').add(new Option(p.titulo, p.id));
+const q = new URLSearchParams(location.search);
+if (q.get('p')) $('proy').value = q.get('p');
+
+await document.fonts.load('700 82px SG'); await document.fonts.load('700 104px SG');
+const out = $('vista'), ctx = out.getContext('2d');
+
+// ---------- fondo (mismo degradado que el CSS del motor: ellipse at 50% 45%, farthest-corner)
+const fondo = document.createElement('canvas'); fondo.width = W; fondo.height = H;
+{ const g = fondo.getContext('2d'), cx = W * .5, cy = H * .45;
+  const rx = Math.SQRT2 * Math.max(cx, W - cx), ry = Math.SQRT2 * Math.max(cy, H - cy);
+  g.translate(cx, cy); g.scale(rx / ry, 1);
+  const gr = g.createRadialGradient(0, 0, 0, 0, 0, ry);
+  gr.addColorStop(0, '#1d1f33'); gr.addColorStop(.7, '#0e0f1a'); gr.addColorStop(1, '#08080f');
+  g.fillStyle = gr; g.fillRect(-W * 3, -H, W * 6, H * 2); }
+
+let S, P, cartas = [], dur = 0, gl;
+async function cargar(id) {
+  P = PROYECTOS.find(p => p.id === id);
+  estado('Cargando ' + P.titulo + '…');
+  const old = $('c'), c = old.cloneNode(); old.replaceWith(c); gl = c;   // lienzo WebGL nuevo por proyecto
+  for (const k of ['cap', 'nota', 'brand']) $(k).innerHTML = '';
+  const mod = await import(`/videos/${P.id}/episodio.js?v=${Date.now()}`);
+  S = new Stage(c, W, H); mod.build(S);
+  dur = P.duracion || mod.meta.duration;
+  cartas = await Promise.all((P.tarjetas || []).map(async k => {
+    const im = new Image(); im.src = `/videos/${P.id}/${k.img}`; await im.decode();
+    return { ...k, im };
+  }));
+  $('seek').max = dur; $('seek').value = 0; pintar(0);
+  estado(`${P.titulo}\n${dur.toFixed(1)} s · ${Math.ceil(dur * FPS)} cuadros a ${FPS} fps`);
+}
+
+// ---------- textos: el motor los coloca en el DOM; aquí se leen sus posiciones y se pintan en el lienzo
+const parseT = s => ({ sc: +(/scale\(([-\d.e]+)\)/.exec(s)?.[1] ?? 1), ty: +(/translateY\(([-\d.e]+)px\)/.exec(s)?.[1] ?? 0) });
+const metr = (font, ls) => { ctx.font = font; ctx.letterSpacing = ls; const m = ctx.measureText('Hgy'); return [m.fontBoundingBoxAscent, m.fontBoundingBoxDescent]; };
+function sombras(fn) {                         // text-shadow: 0 5px 0 rgba(0,0,0,.55), 0 0 24px rgba(0,0,0,.6)
+  ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.6)'; ctx.shadowBlur = 24; fn(); ctx.restore();
+  ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowOffsetY = 5; fn(); ctx.restore();
+  fn();
+}
+function pintarCap() {
+  const cap = $('cap'); if (!cap.children.length) return;
+  const font = "700 82px SG", lh = 82 * 1.12, [as, de] = metr(font, '-1px');
+  for (const w of cap.children) {
+    const a = +(w.style.opacity || 0); if (a <= 0) continue;
+    const { sc, ty } = parseT(w.style.transform);
+    const x = 60 + w.offsetLeft, y = 300 + w.offsetTop, ow = w.offsetWidth;
+    const ox = x + ow * .5, oy = y + w.offsetHeight * .8, base = y + (lh - as - de) / 2 + as;
+    ctx.save(); ctx.globalAlpha = Math.min(1, a);
+    ctx.translate(ox, oy); ctx.scale(sc, sc); ctx.translate(0, ty); ctx.translate(-ox, -oy);
+    ctx.font = font; ctx.letterSpacing = '-1px'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = w.classList.contains('k') ? '#cdf23a' : w.classList.contains('r') ? '#ff4a36' : '#fff';
+    sombras(() => ctx.fillText(w.textContent, x, base));
+    ctx.restore();
+  }
+}
+function pintarNota() {
+  const n = $('nota'), a = +(n.style.opacity || 0); if (a <= 0 || !n.textContent) return;
+  const font = "700 40px SG", [as, de] = metr(font, '0px'), lh = 48, maxW = 900;
+  const lines = [], words = n.textContent.split(/\s+/); let l = '';
+  for (const w of words) { const t = l ? l + ' ' + w : w; if (ctx.measureText(t).width > maxW && l) { lines.push(l); l = w; } else l = t; }
+  lines.push(l);
+  ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = '#c9cbe0'; ctx.textAlign = 'center';
+  lines.forEach((t, i) => ctx.fillText(t, W / 2, 540 + i * lh + (lh - as - de) / 2 + as));
+  ctx.restore();
+}
+function pintarBrand() {
+  const bd = $('brand'), a = +(bd.style.opacity || 0); if (a <= 0) return;
+  const bt = bd.querySelector('.bt'), bs = bd.querySelector('.bs');
+  const { sc, ty } = parseT(bd.style.transform);
+  const bx = bd.offsetLeft, by = bd.offsetTop, cx = bx + bd.offsetWidth / 2, cy = by + bd.offsetHeight / 2;
+  ctx.save(); ctx.globalAlpha = Math.min(1, a);
+  ctx.translate(0, ty); ctx.translate(cx, cy); ctx.scale(sc, sc); ctx.translate(-cx, -cy);
+  if (bt) {
+    const x = bx + bt.offsetLeft, y = by + bt.offsetTop, w = bt.offsetWidth, h = bt.offsetHeight;
+    ctx.save(); ctx.translate(x + w / 2, y + h / 2); ctx.rotate(-2 * Math.PI / 180); ctx.translate(-w / 2, -h / 2);
+    ctx.fillStyle = '#14151f'; ctx.fillRect(12, 12, w, h);                 // box-shadow 12px 12px
+    ctx.fillRect(0, 0, w, h); ctx.fillStyle = '#cdf23a'; ctx.fillRect(6, 6, w - 12, h - 12);
+    const font = "700 104px SG", [as] = metr(font, '-2px');
+    ctx.fillStyle = '#0e0f1a'; ctx.textAlign = 'left'; ctx.fillText(bt.textContent, 6 + 38, 6 + 10 + as);
+    ctx.restore();
+  }
+  if (bs && bs.textContent) {
+    const font = "700 46px SG", [as] = metr(font, '0px');
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(bs.textContent, W / 2, by + bs.offsetTop + as);
+  }
+  ctx.restore();
+}
+function pintarCartas(t) {                     // igual que componer.sh: centradas, y = 560, fundido de 0.25 s
+  for (const k of cartas) {
+    if (t < k.a || t > k.b) continue;
+    const a = Math.min(1, (t - k.a) / .25, (k.b - t) / .25); if (a <= 0) continue;
+    const w = Math.round(k.im.naturalWidth * (k.s || 1)), h = Math.round(k.im.naturalHeight * (k.s || 1));
+    const x = k.x ?? Math.round((W - w) / 2), y = k.y ?? P.y ?? 560;   // x/y opcionales (p. ej. la etiqueta «PARTE 1/3»)
+    ctx.save(); ctx.globalAlpha = a; ctx.drawImage(k.im, x, y, w, h); ctx.restore();
+  }
+}
+// ---------- capa realista: cuadros PNG renderizados por Blender (salida/blender/<id>/00000.png) en lugar del WebGL
+const CAPA = q.get('capa') === 'blender';
+let capaImg = null;
+async function cargarCapa(f) {
+  try { const r = await fetch(`/salida/blender/${P.id}/${String(f).padStart(5, '0')}.png`); if (!r.ok) throw 0;
+    capaImg?.close?.(); capaImg = await createImageBitmap(await r.blob()); }
+  catch { capaImg = null; }
+}
+function pintar(t) {
+  S.renderFrame(t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.letterSpacing = '0px';
+  ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(0, 0, W, H);   // borra siempre: nada de cuadros anteriores
+  ctx.fillStyle = '#0e0f1a'; ctx.fillRect(0, 0, W, H);                         // piso sólido por si el degradado no se pinta
+  ctx.drawImage(fondo, 0, 0); ctx.drawImage(CAPA && capaImg ? capaImg : gl, 0, 0, W, H);
+  pintarNota(); pintarCap(); pintarBrand(); pintarCartas(t);
+  $('tm').textContent = t.toFixed(2) + ' / ' + dur.toFixed(1) + ' s';
+}
+window.pintar = pintar;
+
+$('seek').oninput = async () => { const t = +$('seek').value; if (CAPA) await cargarCapa(Math.round(t * FPS)); pintar(t); };
+$('proy').onchange = () => cargar($('proy').value);
+await cargar($('proy').value);
+
+// ---------- render a MP4 (WebCodecs + mp4-muxer)
+async function elegir(lista, probar) { for (const c of lista) { try { if ((await probar(c)).supported) return c; } catch {} } return null; }
+async function renderizar() {
+  if (!('VideoEncoder' in window)) { estado('Este navegador no tiene WebCodecs. Usa Google Chrome.'); return; }
+  $('render').disabled = true; $('proy').disabled = true;
+  const t0 = performance.now(), N = Math.ceil(dur * FPS);
+  const vcfgs = [['avc', 'avc1.640028'], ['avc', 'avc1.4d0028'], ['avc', 'avc1.42e028'], ['vp9', 'vp09.00.40.08']]
+    .map(([m, codec]) => ({ m, codec, width: W, height: H, bitrate: 14e6, framerate: FPS }));
+  const vc = await elegir(vcfgs, c => VideoEncoder.isConfigSupported(c));
+  if (!vc) { estado('No encontré un códec de video compatible.'); avisa('ERROR: no hay códec de video compatible'); return; }
+  // audio
+  let ac = null, abuf = null;
+  if (P.audio && 'AudioEncoder' in window) {
+    estado('Leyendo el audio…');
+    const raw = await (await fetch(`/videos/${P.id}/${P.audio}`)).arrayBuffer();
+    abuf = await new OfflineAudioContext(2, 48000, 48000).decodeAudioData(raw);
+    const acfgs = [['aac', 'mp4a.40.2', 256000], ['opus', 'opus', 192000]].map(([m, codec, bitrate]) => ({ m, codec, sampleRate: abuf.sampleRate, numberOfChannels: 2, bitrate }));
+    ac = await elegir(acfgs, c => AudioEncoder.isConfigSupported(c));
+  }
+  const muxer = new Muxer({ target: new ArrayBufferTarget(), fastStart: 'in-memory', firstTimestampBehavior: 'offset',
+    video: { codec: vc.m, width: W, height: H, frameRate: FPS },
+    ...(ac ? { audio: { codec: ac.m, numberOfChannels: 2, sampleRate: abuf.sampleRate } } : {}) });
+  let fallo = null;
+  const venc = new VideoEncoder({ output: (ch, meta) => muxer.addVideoChunk(ch, meta), error: e => fallo = e });
+  const { m: _m, ...vconf } = vc; venc.configure(vconf);
+
+  if (ac) {                                    // audio completo primero (es rápido)
+    const aenc = new AudioEncoder({ output: (ch, meta) => muxer.addAudioChunk(ch, meta), error: e => fallo = e });
+    const { m: _a, ...aconf } = ac; aenc.configure(aconf);
+    const sr = abuf.sampleRate, total = Math.min(abuf.length, Math.round(dur * sr));
+    const L = abuf.getChannelData(0), R = abuf.numberOfChannels > 1 ? abuf.getChannelData(1) : L;
+    for (let i = 0; i < total; i += 4800) {
+      const n = Math.min(4800, total - i), d = new Float32Array(n * 2);
+      d.set(L.subarray(i, i + n), 0); d.set(R.subarray(i, i + n), n);
+      const data = new AudioData({ format: 'f32-planar', sampleRate: sr, numberOfFrames: n, numberOfChannels: 2, timestamp: Math.round(i / sr * 1e6), data: d });
+      aenc.encode(data); data.close();
+    }
+    await aenc.flush(); aenc.close();
+  }
+  for (let f = 0; f < N; f++) {
+    if (fallo) break;
+    if (CAPA) { await cargarCapa(f); if (!capaImg) { fallo = new Error(`falta el cuadro ${f} de Blender (salida/blender/${P.id}/)`); break; } }
+    pintar(f / FPS);
+    const vf = new VideoFrame(out, { timestamp: Math.round(f * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+    venc.encode(vf, { keyFrame: f % (FPS * 2) === 0 }); vf.close();
+    while (venc.encodeQueueSize > 6) await new Promise(r => setTimeout(r, 1));
+    if (f % 15 === 0) {
+      $('barra').firstElementChild.style.width = (100 * f / N).toFixed(1) + '%';
+      const s = (performance.now() - t0) / 1000;
+      if (f % 150 === 0) avisa(`${P.id}: ${f}/${N} cuadros · ${s.toFixed(0)} s · faltan ~${(s / (f + 1) * (N - f)).toFixed(0)} s`);
+      estado(`Renderizando ${f}/${N} cuadros · ${s.toFixed(0)} s · faltan ~${(s / (f + 1) * (N - f)).toFixed(0)} s\nVideo: ${vc.codec} · Audio: ${ac ? ac.codec : 'sin audio'}`);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  if (fallo) { estado('Error al codificar: ' + fallo.message); avisa('ERROR: ' + fallo.message); $('render').disabled = false; $('proy').disabled = false; return; }
+  await venc.flush(); venc.close(); muxer.finalize();
+  const blob = new Blob([muxer.target.buffer], { type: 'video/mp4' });
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: (P.salida || P.id + '.mp4').replace(/\.mp4$/, CAPA ? '_blender.mp4' : '.mp4') });
+  if (AUTO) { await fetch('/salida/' + encodeURIComponent(a.download), { method: 'PUT', body: blob });
+    avisa(`✔ ${a.download} · ${(blob.size / 1e6).toFixed(1)} MB · ${((performance.now() - t0) / 1000).toFixed(0)} s · video ${vc.codec} · audio ${ac ? ac.codec : 'ninguno'}`); }
+  else { document.body.append(a); a.click(); a.remove(); }
+  $('barra').firstElementChild.style.width = '100%';
+  estado(`✔ Listo en ${((performance.now() - t0) / 1000).toFixed(0)} s → ${a.download} (${(blob.size / 1e6).toFixed(1)} MB)\nVideo: ${vc.codec} · Audio: ${ac ? ac.codec : 'sin audio (este navegador no codifica audio)'}`);
+  window.ultimo = blob;
+  $('render').disabled = false; $('proy').disabled = false;
+}
+// ---------- horno: exporta geometría + estado por cuadro de CUALQUIER episodio → salida/<id>.bake.json (lo lee blender/render_blender.py)
+async function hornear() {
+  const N = Math.ceil(dur * FPS), r4 = x => Math.round(x * 1e4) / 1e4;
+  const geoms = [], gi = new Map(), texs = [], ti = new Map(), meshes = [], objs = [], tracks = [], last = [];
+  S.renderFrame(0);
+  S.scene.traverse(o => {
+    if (!o.isMesh || o.isLineSegments2 || o.material.isShadowMaterial) return;
+    const g = o.geometry;
+    if (!gi.has(g.uuid)) { gi.set(g.uuid, geoms.length);
+      geoms.push({ pos: Array.from(g.attributes.position.array, r4), idx: g.index ? Array.from(g.index.array) : null, uv: g.attributes.uv ? Array.from(g.attributes.uv.array, r4) : null }); }
+    const m = o.material; let tex = -1;
+    if (m.map && m.map.image && m.map.image.toDataURL) {
+      if (!ti.has(m.map.uuid)) { ti.set(m.map.uuid, texs.length); texs.push(m.map.image.toDataURL('image/png')); }
+      tex = ti.get(m.map.uuid);
+    }
+    meshes.push({ geom: gi.get(g.uuid), tex, basico: !!m.isMeshBasicMaterial });
+    objs.push(o); tracks.push([]); last.push('');
+  });
+  const cam = []; let lc = '';
+  for (let f = 0; f < N; f++) {
+    S.renderFrame(f / FPS);
+    objs.forEach((o, i) => {
+      let vis = o.visible; for (let p = o.parent; p && vis; p = p.parent) vis = p.visible;
+      const m = o.material, e = m.emissive;
+      const st = vis && m.opacity > 0.003 ? [1, ...Array.from(o.matrixWorld.elements, r4), r4(m.opacity), r4(m.color.r), r4(m.color.g), r4(m.color.b), ...(e ? [r4(e.r), r4(e.g), r4(e.b)] : [0, 0, 0])] : [0];
+      const k = st.join(); if (k !== last[i]) { last[i] = k; tracks[i].push([f, ...st]); }
+    });
+    const c = S.camera, cs = [...Array.from(c.matrixWorld.elements, r4), r4(c.top)], k = cs.join();
+    if (k !== lc) { lc = k; cam.push([f, ...cs]); }
+    if (f % 30 === 0) { estado(`Horneando ${f}/${N}…`); await new Promise(r => setTimeout(r, 0)); }
+  }
+  const body = JSON.stringify({ id: P.id, fps: FPS, frames: N, W, H, geoms, texs, meshes, tracks, cam });
+  await fetch('/salida/' + P.id + '.bake.json', { method: 'PUT', body });
+  estado(`✔ Horneado: salida/${P.id}.bake.json (${(body.length / 1e6).toFixed(1)} MB, ${meshes.length} mallas, ${N} cuadros)`);
+  avisa(`✔ ${P.id}.bake.json · ${(body.length / 1e6).toFixed(1)} MB · ${meshes.length} mallas · ${N} cuadros`);
+}
+window.hornear = hornear;
+$('render').onclick = renderizar;
+window.renderizar = renderizar;
+if (AUTO) {                                   // ?p=cuant3&auto=1  (o ?todos&auto=1)
+  const ids = q.has('todos') ? PROYECTOS.map(p => p.id) : [$('proy').value];
+  try { for (const id of ids) { await cargar(id); avisa(`▸ ${P.titulo} (${dur.toFixed(1)} s)`); await (q.has('bake') ? hornear() : renderizar()); } }
+  catch (e) { avisa('ERROR: ' + (e && e.message || e)); }
+  await fetch('/fin').catch(() => {});
+}
+</script>
+</body></html>

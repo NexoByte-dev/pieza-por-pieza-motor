@@ -1,0 +1,10 @@
+{
+  "tts": "",
+  "pausa": 0.35,
+  "vol_sfx": 0.5,
+  "vol_musica": 0.12,
+  "musica": "",
+  "gpu": false,
+  "blender": "blender",
+  "blender_args": ""
+}

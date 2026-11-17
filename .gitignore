@@ -1,8 +1,9 @@
-node_modules/
+# renders y temporales
 salida/
-kit.json
+*.mp4
 .DS_Store
-# audio de terceros / voces: no se suben (repo público)
-videos/*/audio_externo.*
-videos/*/audio.flac
-videos/*/voz/
+# las mezclas van en FLAC (más livianas); los WAV quedan solo en tu compu
+proyectos/**/*.wav
+videos/
+# configuración local del kit
+kit.json

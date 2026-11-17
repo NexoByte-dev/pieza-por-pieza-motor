@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  @font-face { font-family: 'SG'; font-weight: 700; src: url('/node_modules/@fontsource/space-grotesk/files/space-grotesk-latin-700-normal.woff2') format('woff2'); }
+  html, body { margin: 0; overflow: hidden; background: #000; }
+  #stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; overflow: hidden; transform-origin: 0 0;
+           background: radial-gradient(ellipse at 50% 45%, #1d1f33 0%, #0e0f1a 70%, #08080f 100%); }
+  canvas { position: absolute; inset: 0; width: 1080px; height: 1920px; }
+  #cap { position: absolute; left: 60px; right: 60px; top: 300px; text-align: center; font: 700 82px/1.12 'SG', sans-serif;
+         color: #fff; letter-spacing: -1px; text-shadow: 0 5px 0 rgba(0,0,0,.55), 0 0 24px rgba(0,0,0,.6); }
+  .w { display: inline-block; transform-origin: 50% 80%; }
+  .w.k { color: #cdf23a; } .w.r { color: #ff4a36; }
+  #nota { position: absolute; left: 90px; right: 90px; top: 540px; text-align: center; font: 700 40px/1.2 'SG', sans-serif;
+          color: #c9cbe0; opacity: 0; }
+  #brand { position: absolute; left: 0; right: 0; bottom: 330px; text-align: center; opacity: 0; font-family: 'SG', sans-serif; }
+  #brand .bt { display: inline-block; font-weight: 700; font-size: 104px; letter-spacing: -2px; color: #0e0f1a; background: #cdf23a;
+               padding: 10px 38px 16px; border: 6px solid #14151f; box-shadow: 12px 12px 0 #14151f; transform: rotate(-2deg); }
+  #brand .bs { margin-top: 34px; font-weight: 700; font-size: 46px; color: #fff; }
+  /* vista previa */
+  #ui { position: fixed; left: 0; right: 0; bottom: 0; display: none; gap: 10px; align-items: center; padding: 10px 14px;
+        background: rgba(0,0,0,.75); color: #fff; font: 14px system-ui; }
+  #ui input[type=range] { flex: 1; } #ui button { font: 600 14px system-ui; padding: 6px 12px; }
+</style>
+<script type="importmap">{ "imports": { "three": "/node_modules/three/build/three.module.js", "three/addons/": "/node_modules/three/examples/jsm/" } }</script>
+</head><body>
+<div id="stage"><canvas id="c"></canvas><div id="cap"></div><div id="nota"></div><div id="brand"></div></div>
+<div id="ui"><button id="play">▶</button><input id="seek" type="range" min="0" step="0.01" value="0"><span id="tm">0.0</span></div>
+<script type="module">
+  import { Stage } from '/engine.js';
+  const q = new URLSearchParams(location.search);
+  const ep = q.get('ep') || 'gpu';
+  await document.fonts.load("700 82px SG");               // la fuente debe estar lista antes de pintar textos 3D
+  const mod = await import(`/videos/${ep}/episodio.js`);
+  const W = +(q.get('w') || 1080), H = +(q.get('h') || 1920);
+  if (W !== 1080 || H !== 1920) { for (const id of ['stage', 'c']) Object.assign(document.getElementById(id).style, { width: W + 'px', height: H + 'px' }); }
+  if (q.has('limpio')) for (const id of ['cap', 'nota', 'brand']) document.getElementById(id).style.display = 'none';
+  const S = new Stage(document.getElementById('c'), W, H);
+  mod.build(S);
+  window.renderFrame = t => S.renderFrame(t);
+  window.EP = { meta: mod.meta, sfx: S.sfx, beats: mod.beats || [] };
+  window.setWarp = (n, r) => S.setWarp(n, r);
+  window.ready = true;
+
+  // ---- Modo vista previa: index.html?ep=ia_local&preview=1[&timing=out/x.timing.tts.json][&audio=out/x_audio.wav]
+  if (q.has('preview')) {
+    const stage = document.getElementById('stage'), ui = document.getElementById('ui');
+    const fit = () => { const s = Math.min(innerHeight / 1920, innerWidth / 1080); stage.style.transform = `scale(${s})`; stage.style.left = (innerWidth - 1080 * s) / 2 + 'px'; };
+    fit(); addEventListener('resize', fit); ui.style.display = 'flex';
+    let dur = mod.meta.duration;
+    if (q.get('timing')) { const tj = await (await fetch('/' + q.get('timing'))).json(); S.setWarp(tj.nom, tj.real); dur = tj.real.at(-1); }
+    const audio = q.get('audio') ? new Audio('/' + q.get('audio')) : null;
+    const seek = document.getElementById('seek'), tm = document.getElementById('tm'), btn = document.getElementById('play');
+    seek.max = dur; let t = 0, playing = false, last = 0;
+    const show = () => { S.renderFrame(t); seek.value = t; tm.textContent = t.toFixed(1) + ' / ' + dur.toFixed(1); };
+    btn.onclick = () => { playing = !playing; btn.textContent = playing ? '❚❚' : '▶'; last = performance.now();
+      if (audio) { audio.currentTime = t; playing ? audio.play() : audio.pause(); } };
+    seek.oninput = () => { t = +seek.value; if (audio) audio.currentTime = t; show(); };
+    addEventListener('keydown', e => { if (e.code === 'Space') btn.click(); });
+    const loop = now => {
+      if (playing) { t = audio ? audio.currentTime : t + (now - last) / 1000; last = now; if (t >= dur) { t = 0; if (audio) audio.currentTime = 0; } }
+      show(); requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }
+</script>
+</body></html>
